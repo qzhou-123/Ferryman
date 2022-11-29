@@ -1,0 +1,76 @@
+##fpkm##
+setwd("/Users/zhouquan/Desktop/RNA-seq/x500-RenFan/depc_x500")
+raw_fpkm <- read.table(file="./raw_fpkm.txt", check.names = F,sep="\t",header=T)
+raw_fpkm[1:5,1:8]
+final_fpkm <- raw_fpkm[(apply(raw_fpkm[,3:8],1,function(x){return(any(x>1))})),]
+head(final_fpkm)
+nrow(final_fpkm)##15216
+##count##
+raw_count <- read.table("./raw_count.txt",header = T,sep = "\t")
+nrow(raw_count)#32525
+final_count <- raw_count[(apply(raw_count[,2:7],1,function(x){return(any(x>0))})),]
+head(final_count)
+nrow(final_count)##23998
+###############################
+final_filter.count <- left_join(final_fpkm,final_count,by = "tracking_id")
+#[,c(1,8:13)]
+head(final_filter.count)
+AllCount <- left_join(raw_fpkm,raw_count,"tracking_id")
+nrow(raw_fpkm)
+head(AllCount)
+write.table(AllCount,"/Users/zhouquan/Desktop/RNA-seq/x500-RenFan/depc_x500/AllCount_depc_x500.xls",sep = "\t",quote = F,row.names = F)
+
+
+row.names(final_filter.count) <- final_filter.count[,1]
+final_filter.count <- final_filter.count[,-1] %>% na.omit()
+head(final_filter.count)
+
+condition <- factor(c(rep("depc",3),rep("x500",3)), levels = c("depc","x500"))
+condition
+colData <- data.frame(row.names=colnames(final_filter.count), condition)
+colData
+dds <- DESeqDataSetFromMatrix(final_filter.count, colData, design= ~ condition)
+dds <- DESeq(dds)
+###pheatmap##
+normalized_dds = counts(dds,normalized=TRUE)
+normalized_dds[normalized_dds==0]=0.001
+clS <- cor(normalized_dds,method = "spearman")
+pheatmap(clS)
+
+####result#####
+res = results(dds, contrast=c("condition", "x500", "depc"))
+head(res)
+summary(res)
+
+
+
+table(res$padj<0.05)
+
+diff_gene_deseq2 <-subset(res, padj < 0.05)
+nrow(diff_gene_deseq2)
+up_gene_deseq2 <-subset(res, padj < 0.05 & log2FoldChange > 1)
+nrow(up_gene_deseq2)
+down_gene_deseq2 <-subset(res, padj < 0.05 & log2FoldChange < -1)
+nrow(do)
+
+
+rld.dds <- rlog(dds)
+pdf("/Users/zhouquan/Desktop/RNA-seq/x500-RenFan/depc_x500/PDF/PCA.pdf")
+#plot_list = list()
+for (i in seq(500, 10000, 100)) {
+  #ntop = i
+  #print(paste("ntop=",i))
+  #pdf("/Users/qintang/Documents/ATACSeq/PCA_rlt/PCA_${i}.pdf")
+  #png("/Users/qintang/Documents/ATACSeq/PCA_rlt/PCA_500.png")
+  A=plotPCA(rld.dds, intgroup = "condition",ntop=i, returnData = FALSE)
+  #plot_list[[i]] = A
+  # colname=c("T2WT1","T2WT2","T2WT3","T2MUT1","T2MUT2","T2MUT3","T2KO1","T2KO2","T2KO3")
+  colname=c("depc_1","depc_2","depc_3","x500_1","x500_2","x500_3")
+  nudge <- position_nudge(x=0.5,y = -0.5)
+  #A+geom_text(aes(label = colname),position = nudge)+labs(title=paste("top",i))
+  B=A+geom_text(aes(label = colname),position = nudge,size=2)+ggtitle(paste("top",i))+
+  theme(plot.title = element_text(hjust = 0.5))
+  print(B)
+  #plot_list[[i]] = B
+}
+dev.off()
