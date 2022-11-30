@@ -75,4 +75,4 @@ ls *aln.pep.fa|while read id;do ParaAT.pl  -h single_copy_homo.txt -a ${id} -n $
 5       1
 (Omyk,(Ipun,(Pful#1,Pvac)),Drer);
 python3 callCodeml.py ./PAML  paml.tree
-注：callCodeml.py为网上查找脚本，需自己按照需求进行修改生成统一化的表格
+注：callCodeml.py为网上查找脚本，需自己按照需求进行修改生成统一化的表格,网址为https://www.jianshu.com/p/361275ed33da
