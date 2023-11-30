@@ -180,7 +180,7 @@ ggplot(data=go_enrich_df, aes(x=number, y=GeneNumber, fill=type)) +
 
 
 ###非模式物种（黄颡鱼为例）#######
-#GO
+###GO###
 #读取数据
 egg <- read.table("/Users/zhouquan/Desktop/黄颡鱼参考基因组及注释/xxNew.emapper.annotations",sep="\t",header=T, stringsAsFactors = FALSE)
 #提取id列
@@ -204,26 +204,59 @@ dotplot(df, showCategory = 15 ,title = "peikong stage xx-up genes enrichment")+
   scale_size(range = c(1, 10))
 
 ###KEGG
-gene_pathway <- read.delim('/Users/zhouquan/Desktop/黄颡鱼参考基因组及注释/xxNew.emapper.annotations',
-                           sep="\t",check.names=F) %>%
-  dplyr::select(1,KEGG_ko,KEGG_Pathway) %>% 
-  separate_rows(KEGG_Pathway,sep=',',convert = F) %>%
-  filter(str_detect(KEGG_Pathway,'ko')) %>%
-  mutate(KEGG_ko=str_remove(KEGG_ko,"ko:")) %>%
-  dplyr::select(3,1)
-head(gene_pathway)
+setwd("/Users/zhouquan/Desktop/alternative_splice/RNA-seq/expression_matrix")
+if(!file.exists('kegg_info.RData')){
+  library(jsonlite)
+  library(purrr)
+  library(RCurl)
+  update_kegg <- function(json = "ko00001.json",file=NULL) {
+    pathway2name <- tibble(Pathway = character(), Name = character())
+    ko2pathway <- tibble(Ko = character(), Pathway = character())
+    kegg <- fromJSON(json)
+    for (a in seq_along(kegg[["children"]][["children"]])) {
+      A <- kegg[["children"]][["name"]][[a]]
+      for (b in seq_along(kegg[["children"]][["children"]][[a]][["children"]])) {
+        B <- kegg[["children"]][["children"]][[a]][["name"]][[b]] 
+        for (c in seq_along(kegg[["children"]][["children"]][[a]][["children"]][[b]][["children"]])) {
+          pathway_info <- kegg[["children"]][["children"]][[a]][["children"]][[b]][["name"]][[c]]
+          pathway_id <- str_match(pathway_info, "ko[0-9]{5}")[1]
+          pathway_name <- str_replace(pathway_info, " \\[PATH:ko[0-9]{5}\\]", "") %>% str_replace("[0-9]{5} ", "")
+          pathway2name <- rbind(pathway2name, tibble(Pathway = pathway_id, Name = pathway_name))
+          kos_info <- kegg[["children"]][["children"]][[a]][["children"]][[b]][["children"]][[c]][["name"]]
+          kos <- str_match(kos_info, "K[0-9]*")[,1]
+          ko2pathway <- rbind(ko2pathway, tibble(Ko = kos, Pathway = rep(pathway_id, length(kos))))
+        }
+      }
+    }
+    save(pathway2name, ko2pathway, file = file)
+  }
+  update_kegg(json = "ko00001.json",file="kegg_info.RData")
+}
 
-pathway_name <- clusterProfiler:::kegg_list("pathway") %>%
-  mutate(across("from",str_replace,"path:map","ko")) %>% 
-  set_colnames(c("path_id","path_name"))
-head(pathway_name)
 
-re <- enricher(da1,
-               TERM2GENE = gene_pathway,
-               TERM2NAME = pathway_name,
-               pvalueCutoff = 0.5,
-               qvalueCutoff = 0.5)
-head(re)
+load("kegg_info.RData")
+head(ko2pathway)
+head(pathway2name)
 
-barplot(re,showCategory = 20)
-dotplot(re,showCategory = 20)
+colnames(ko2pathway) = c("KO","Pathway")
+head(ko2pathway)
+
+gene2ko <- egg %>% dplyr::select(GID = query_name, KO = KEGG_ko) %>% na.omit()
+all_ko_list=str_split(gene2ko$KO,",")
+gene2ko <- data.frame(GID=rep(gene2ko$GID,times=sapply(all_ko_list,length)),KO=unlist(all_ko_list))
+gene2ko$KO=str_replace(gene2ko$KO,"ko:","")
+head(gene2ko)
+Term2gene <- gene2ko %>% left_join(ko2pathway, by = "KO",relationship = "many-to-many") %>% dplyr::select(Pathway,GID) %>% na.omit()
+head(Term2gene)
+
+df2 <- read.table("/Users/zhouquan/Desktop/alternative_splice/RNA-seq/expression_matrix/up_mRNA.txt",header = F)
+head(df2)
+
+kegg <- enricher(gene=df2$V1[1:nrow(df2)],
+         pvalueCutoff = 1,
+         qvalueCutoff = 1,
+         TERM2GENE = Term2gene,
+         TERM2NAME = pathway2name)
+
+dotplot(kegg, showCategory = 15 ,title = "Gene enrichment")
+barplot(kegg, showCategory = 15 ,title = "Gene enrichment")
