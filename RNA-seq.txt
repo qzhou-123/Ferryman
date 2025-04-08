@@ -1,0 +1,262 @@
+RNA-seq
+###原始数据质控(fastqc)
+ls *R1.fq.gz | while read id 
+do 
+R1=${id}
+R2=${id%R1.fq.gz}R2.fq.gz
+echo "fastqc -o ./qc.result -t 8 ${R1} ${R2}" > ${id%R1.fq.gz}qc.sh
+done
+获取脚本后循环提交任务
+
+###原始数据过滤获得高质量数据(trimgalore)
+module load TrimGalore/0.6.6
+ls ./*R1.fq.gz | while read id
+do 
+R1=${id}
+R2=${id%R1.fq.gz}R2.fq.gz
+echo "trim_galore ${R1} ${R2} --three_prime_clip_R1 5 --three_prime_clip_R2 5 --clip_R1 8 --clip_R2 8 -q 20 --paired --phred33 -o trimmed_data" > ${id%R1.fq.gz}trim.sh
+done
+获取脚本后循环提交任务
+
+###过滤数据质控(fastqc)
+module load FastQC/0.11.9
+ls *R1_val_1.fq.gz| while read id 
+do 
+R1=${id}
+R2=${id%R1_val_1.fq.gz}R2_val_2.fq.gz
+echo "fastqc -o ./qc.result -t 8 ${R1} ${R2}" > ${id%R1_val_1.fq.gz}qc.sh
+done
+获取脚本后循环提交任务
+
+###Bowtie2建索引
+module load Bowtie2/2.2.8-foss-2016b
+bowtie2-build ./Danio_rerio.GRCz11.dna_sm.primary_assembly.fa Danio_rerio.GRCz11.dna_sm.primary_assembly
+
+###tophat比对
+echo "Start!"; date
+module load Tophat/2.1.1
+module load Python2.7
+module load Bowtie2/2.2.8-foss-2016b
+ls ./*R1_val_1.fq.gz|while read id
+do
+R1=${id}
+R2=${id%R1_val_1.fq.gz}R2_val_2.fq.gz
+mkdir -p ${id%R1_val_1.fq.gz}tophat_result
+echo "tophat -p 18 -G Danio_rerio.GRCz11.104.gtf -o ${id%R1_val_1.fq.gz}tophat_result Danio_rerio.GRCz11.dna_sm.primary_assembly ${R1} ${R2}">${id%%R1_val_1.fq.gz}
+done
+获取脚本后循环提交任务
+
+###infer_experiment对比对获得的bam文件进行链特异性判断（bed文件需要网上下载）
+ls *.bam|while read id 
+do infer_experiment.py -r danRer11_Ensembl.Dec_14_2021.new.bed  -i ${id}
+done
+
+###比对获取的bam文件进行排序
+ls *bam|while read id 
+do
+samtools sort -@8 ${id} -o ${id%bam}sorted.bam
+done
+
+###htseq-count获得表达矩阵
+ls *sorted.bam|while read id 
+do
+echo "htseq-count -f bam --stranded=yes -r name ${id} Danio_rerio.GRCz11.104.gtf >${id%accepted_hits.sorted.bam}htseq.txt">${id%accepted_hits.sorted.bam}htseq.sh
+done
+获取脚本后循环提交任务
+
+###cuffdiff整合比对结果，得到fpkm矩阵
+cuffdiff -p 20 Danio_rerio.GRCz11.104.gtf depc_1_accepted_hits.bam depc_2_accepted_hits.bam depc_3_accepted_hits.bam x500_1_accepted_hits.bam x500_2_accepted_hits.bam x500_3_accepted_hits.bam
+
+
+###Deseq2做差异分析
+library("ggplot2")
+library("dplyr")
+library("tools")
+library("DESeq2")
+library("RColorBrewer")
+library("gplots")
+library("pheatmap")
+library("tsne")
+library("Rtsne")
+##fpkm##
+setwd("/Users/zhouquan/Desktop/RNA-seq/x500-RenFan/wt_v/")
+raw_fpkm <- read.table(file="./raw_fpkm_WT_v_filter.txt", check.names = F,sep="\t",header=T)
+raw_fpkm[1:5,1:7]
+final_fpkm <- raw_fpkm[(apply(raw_fpkm[,2:7],1,function(x){return(any(x>1))})),]
+head(final_fpkm)
+nrow(final_fpkm)##14495
+##count##
+raw_count <- read.table("./raw_count_WT_v.txt",header = T,sep = "\t")
+nrow(raw_count)#32525
+final_count <- raw_count[(apply(raw_count[,2:7],1,function(x){return(any(x>0))})),]
+head(final_count)
+nrow(final_count)##24126
+###############################
+final_filter.count <- left_join(final_fpkm,final_count,by = "tracking_id")[,c(1,8:13)]
+head(final_filter.count)
+nrow(final_filter.count)##14495
+row.names(final_filter.count) <- final_filter.count[,1]
+final_filter.count <- final_filter.count[,-1] %>% na.omit()
+head(final_filter.count)
+
+condition <- factor(c(rep("control",3),rep("treat",3)), levels = c("control","treat"))
+condition
+colData <- data.frame(row.names=colnames(final_filter.count), condition)
+colData
+dds <- DESeqDataSetFromMatrix(final_filter.count, colData, design= ~ condition)
+dds <- DESeq(dds)
+###pheatmap##
+normalized_dds = counts(dds,normalized=TRUE)
+normalized_dds[normalized_dds==0]=0.001
+clS <- cor(normalized_dds,method = "pearson")
+pdf("/Users/zhouquan/Desktop/RNA-seq/x500-RenFan/wt_v/PDF/pheatmap.pdf")
+pheatmap(clS)
+dev.off()
+
+####result#####
+res = results(dds, contrast=c("condition", "treat", "control"))
+head(res)
+summary(res)
+table(res$padj<0.05)
+diff_gene_deseq2 <-subset(res, padj < 0.05 & abs(log2FoldChange) > 1)
+nrow(diff_gene_deseq2)
+up_gene_deseq2 <-subset(res, padj < 0.05 & log2FoldChange > 1)
+nrow(up_gene_deseq2)
+down_gene_deseq2 <-subset(res, padj < 0.05 & log2FoldChange < -1)
+nrow(down_gene_deseq2)
+
+##########PCA########
+rld.dds <- rlog(dds)
+pdf("/Users/zhouquan/Desktop/RNA-seq/x500-RenFan/wt_v/PDF/PCA.pdf")
+#plot_list = list()
+for (i in seq(500, 10000, 100)) {
+  #ntop = i
+  #print(paste("ntop=",i))
+  #pdf("/Users/qintang/Documents/ATACSeq/PCA_rlt/PCA_${i}.pdf")
+  #png("/Users/qintang/Documents/ATACSeq/PCA_rlt/PCA_500.png")
+  A=plotPCA(rld.dds, intgroup = "condition",ntop=i, returnData = FALSE)
+  #plot_list[[i]] = A
+  # colname=c("T2WT1","T2WT2","T2WT3","T2MUT1","T2MUT2","T2MUT3","T2KO1","T2KO2","T2KO3")
+  colname=c("WT_1","WT_2","WT_3","v_1","v_2","v_3")
+  nudge <- position_nudge(x=0.5,y = -0.5)
+  #A+geom_text(aes(label = colname),position = nudge)+labs(title=paste("top",i))
+  B=A+geom_text(aes(label = colname),position = nudge,size=2)+ggtitle(paste("top",i))+
+    theme(plot.title = element_text(hjust = 0.5))
+  print(B)
+  #plot_list[[i]] = B
+}
+dev.off()
+
+
+
+###GO/KEGG富集分析图
+####模式生物斑马鱼为例###
+##GO
+gene_id<-row.names(res)
+GO<-enrichGO(gene=gene_id,OrgDb = "org.Dr.eg.db",keyType = "ENSEMBL",ont="ALL",qvalueCutoff = 0.05,readable = T) #gene就是差异基因对应的向量，keyType指定基因ID的类型，默认为ENTREZID,  该参数的取值可以参考keytypes(org.Hs.eg.db)的结果， 建议采用ENTREZID, OrgDb指定该物种对应的org包的名字，ont代表GO的3大类别，BP, CC, MF，也可以选择ALL;  pAdjustMethod指定多重假设检验矫正的方法，这里默认pAdjustMethod="BH",所以这里没有写出来,cutoff指定对应的阈值，readable=TRUE代表将基因ID转换为gene  symbol。
+go<-as.data.frame(GO)
+View(go)
+table(go[,1]) #查看BP,CC,MF的统计数目
+go_MF<-go[go$ONTOLOGY=="MF",][1:10,]
+go_CC<-go[go$ONTOLOGY=="CC",][1:10,]
+go_BP<-go[go$ONTOLOGY=="BP",][1:10,]
+go_enrich_df<-data.frame(ID=c(go_BP$ID, go_CC$ID, go_MF$ID),
+                         Description=c(go_BP$Description, go_CC$Description, go_MF$Description),
+                         GeneNumber=c(go_BP$Count, go_CC$Count, go_MF$Count),
+                         type=factor(c(rep("biological process", 10), rep("cellular component", 10),rep("molecular function",10)),levels=c("molecular function", "cellular component", "biological process")))
+ggplot(data=go_enrich_df, aes(x=number, y=GeneNumber, fill=type)) +
+  geom_bar(stat="identity", width=0.8) + coord_flip() + 
+  scale_fill_manual(values = CPCOLS) + theme_test() + 
+  scale_x_discrete(labels=labels) +
+  xlab("GO term") + 
+  theme(axis.text=element_text(face = "bold", color="gray50")) +
+  labs(title = "The Most Enriched GO Terms")
+##KEGG
+  kk.up <- enrichKEGG(gene         = gene_id,
+                      organism     = 'dre',
+                      pvalueCutoff = 0.9,
+                      qvalueCutoff =0.9)
+
+
+
+###非模式物种（黄颡鱼为例）#######
+###GO###
+#读取数据
+egg <- read.table("/Users/zhouquan/Desktop/黄颡鱼参考基因组及注释/xxNew.emapper.annotations",sep="\t",header=T, stringsAsFactors = FALSE)
+#提取id列
+gene_ids <- egg$query_name
+#有的基因没有注释到会显示为  ""，需使用逻辑值索引去除未注释到的
+eggnog_lines_with_go <- egg$GOs!= ""
+#将一个GeneId对应多个GOId的宽数据格式转换位长数据格式
+eggnog_annoations_go <- str_split(egg[eggnog_lines_with_go,]$GOs, ",")
+gene_to_go <- data.frame(gene = rep(gene_ids[eggnog_lines_with_go], times = sapply(eggnog_annoations_go, length)), term = unlist(eggnog_annoations_go))
+term2gene1 <- gene_to_go[, c(2, 1)]
+#为直接注释补充为间接注释
+term2gene <- buildGOmap(term2gene1)
+#将GoId转换为GoTerm
+go2term <- go2term(term2gene$GO)
+#将GoId转换为GoOnt
+go2ont <- go2ont(term2gene$GO)
+#2cell_xy_up
+df <- enricher(gene = rownames(res_peikong)[grep("xx",res_peikong$sex_bias)], TERM2GENE = term2gene, TERM2NAME = go2term, pvalueCutoff = 1, qvalueCutoff = 1)
+dotplot(df, showCategory = 15 ,title = "peikong stage xx-up genes enrichment")+ 
+  scale_color_continuous(low = "firebrick", high = "lightcoral") + 
+  scale_size(range = c(1, 10))
+
+###KEGG
+setwd("/Users/zhouquan/Desktop/alternative_splice/RNA-seq/expression_matrix")
+if(!file.exists('kegg_info.RData')){
+  library(jsonlite)
+  library(purrr)
+  library(RCurl)
+  update_kegg <- function(json = "ko00001.json",file=NULL) {
+    pathway2name <- tibble(Pathway = character(), Name = character())
+    ko2pathway <- tibble(Ko = character(), Pathway = character())
+    kegg <- fromJSON(json)
+    for (a in seq_along(kegg[["children"]][["children"]])) {
+      A <- kegg[["children"]][["name"]][[a]]
+      for (b in seq_along(kegg[["children"]][["children"]][[a]][["children"]])) {
+        B <- kegg[["children"]][["children"]][[a]][["name"]][[b]] 
+        for (c in seq_along(kegg[["children"]][["children"]][[a]][["children"]][[b]][["children"]])) {
+          pathway_info <- kegg[["children"]][["children"]][[a]][["children"]][[b]][["name"]][[c]]
+          pathway_id <- str_match(pathway_info, "ko[0-9]{5}")[1]
+          pathway_name <- str_replace(pathway_info, " \\[PATH:ko[0-9]{5}\\]", "") %>% str_replace("[0-9]{5} ", "")
+          pathway2name <- rbind(pathway2name, tibble(Pathway = pathway_id, Name = pathway_name))
+          kos_info <- kegg[["children"]][["children"]][[a]][["children"]][[b]][["children"]][[c]][["name"]]
+          kos <- str_match(kos_info, "K[0-9]*")[,1]
+          ko2pathway <- rbind(ko2pathway, tibble(Ko = kos, Pathway = rep(pathway_id, length(kos))))
+        }
+      }
+    }
+    save(pathway2name, ko2pathway, file = file)
+  }
+  update_kegg(json = "ko00001.json",file="kegg_info.RData")
+}
+
+
+load("kegg_info.RData")
+head(ko2pathway)
+head(pathway2name)
+
+colnames(ko2pathway) = c("KO","Pathway")
+head(ko2pathway)
+
+gene2ko <- egg %>% dplyr::select(GID = query_name, KO = KEGG_ko) %>% na.omit()
+all_ko_list=str_split(gene2ko$KO,",")
+gene2ko <- data.frame(GID=rep(gene2ko$GID,times=sapply(all_ko_list,length)),KO=unlist(all_ko_list))
+gene2ko$KO=str_replace(gene2ko$KO,"ko:","")
+head(gene2ko)
+Term2gene <- gene2ko %>% left_join(ko2pathway, by = "KO",relationship = "many-to-many") %>% dplyr::select(Pathway,GID) %>% na.omit()
+head(Term2gene)
+
+df2 <- read.table("/Users/zhouquan/Desktop/alternative_splice/RNA-seq/expression_matrix/up_mRNA.txt",header = F)
+head(df2)
+
+kegg <- enricher(gene=df2$V1[1:nrow(df2)],
+         pvalueCutoff = 1,
+         qvalueCutoff = 1,
+         TERM2GENE = Term2gene,
+         TERM2NAME = pathway2name)
+
+dotplot(kegg, showCategory = 15 ,title = "Gene enrichment")
+barplot(kegg, showCategory = 15 ,title = "Gene enrichment")

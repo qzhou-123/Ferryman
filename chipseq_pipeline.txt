@@ -1,0 +1,168 @@
+########chip-seq流程##########
+1.质控(fastp)
+
+#BSUB -o fastp.out
+#BSUB -e fastp.err
+#BSUB -q q2680v2
+#BSUB -n 16
+ls ./*R1.fq.gz|while read id 
+do
+fastp -w 16 -i ${id} -I ${id%R1.fq.gz}R1.clean.fq.gz
+    -o ${R1%R1.fq.gz}R2.fq.gz -O ${R2%R1.fq.gz}R2.clean.fq.gz
+    -q 20 -l 50 ${id%R1.fq.gz}html
+done
+
+2.比对(bowtie2)
+##建索引
+bowtie2-build --threads 12 ./Danio_rerio.GRCz11.dna_sm.primary_assembly.fa ./Danio_rerio
+##比对
+ls *R1.clean.fq.gz|while read id
+do
+echo "
+#BSUB -e %J.err
+#BSUB -o %J.out
+#BSUB -q q2680v2
+#BSUB -n 12
+module load Bowtie2/2.4.4
+bowtie2 -p 12 -q  -x Danio_rerio -1 ${id} -2 ${id%R1.clean.fq.gz}R2.clean.fq.gz -S ${id%_R1.clean.fq.gz}.sam --local
+" > ${id%R1.clean.fq.gz}bowtie.sh
+done
+
+3.call peaks
+###排序
+ls *sam|while read id 
+do
+echo "
+#BSUB -e %J.err
+#BSUB -o %J.out
+#BSUB -q q2680v2
+#BSUB -n 4
+module load SAMtools/1.9
+samtools sort ${id} > ${id%.sam}_sorted.bam
+" > ${id%.sam}_sorted.sh
+done
+
+ls *-Input_sorted.bam|while read id
+do 
+echo "
+#BSUB -e %J.err
+#BSUB -o %J.out
+#BSUB -q q2680v2
+#BSUB -n 12
+macs2 callpeak -c ${id} -t ${id%-Input_sorted.bam}_sorted.bam -q 0.05 -f BAM -g 1.6e9 -n ${id%-Input_sorted.bam}
+"> ${id%-Input_sorted.bam}_macs2.sh
+done
+
+4.将narrowPeak文件传到本地，使用R画图
+setwd("~/Desktop/chip/call_peaks")
+library("ChIPseeker")
+library("org.Dr.eg.db")
+library("TxDb.Drerio.UCSC.danRer11.refGene")
+library("clusterProfiler")
+library("ggupset")
+txdb <- TxDb.Drerio.UCSC.danRer11.refGene
+#View of location
+WT_1 <- readPeakFile("WT-1_peaks_new.narrowPeak")
+WT_2 <- readPeakFile("WT-2_peaks_new.narrowPeak")
+i3_1 <- readPeakFile("i3-1_peaks_new.narrowPeak")
+i3_2 <- readPeakFile("i3-2_peaks_new.narrowPeak")
+peaks <- list(WT1=WT_1,WT2=WT_2,i3_1=i3_1,i3_2=i3_2)
+
+##查看每个样本上所有染色体上的peaks分布情况
+covplot(WT_1,weightCol="V5")
+
+###ChIP peaks结合TSS 区域的情况
+promoter <- getPromoters(TxDb=txdb, upstream=3000, downstream=3000)
+tagMatrix <- getTagMatrix(peaks, windows=promoter)
+###Heatmap of ChIP binding to TSS regions
+tagHeatmap(tagMatrix, xlim=c(-3000, 3000), color="red")
+peakHeatmap(peaks, TxDb=txdb, upstream=3000, downstream=3000, color="blue")
+
+###Average Profile of ChIP peaks binding to TSS region
+tagMatrixList <- lapply(peaks, getTagMatrix, windows=promoter)
+peakAnnoList <- lapply(peaks, annotatePeak, TxDb=txdb,tssRegion=c(-3000, 3000), 
+                       verbose=FALSE,addFlankGeneInfo=TRUE, flankDistance=5000,annoDb="org.Dr.eg.db")
+##调控元件的差异条形图
+plotAnnoBar(peakAnnoList)
+plotDistToTSS(peakAnnoList,title="Distribution of transcription factor-binding loci relative to TSS")
+
+##电脑跑不动
+plotAvgProf(tagMatrix, xlim=c(-3000, 3000),
+            conf=0.95,
+            xlab="Genomic Region (5'->3')", ylab = "Read Count Frequency")
+peakAnno <- annotatePeak(WT_1, tssRegion=c(-3000, 3000),
+                         TxDb=txdb, annoDb="org.Dr.eg.db")
+###单个样本
+plotAnnoPie(peakAnno)
+plotAnnoBar(peakAnno)
+vennpie(peakAnno)
+upsetplot(peakAnno)
+##################富集分析###################
+# Create a list with genes from each sample
+gene = lapply(peakAnnoList, function(i) as.data.frame(i)$geneId)
+# Run GO enrichment analysis 
+ego <- enrichGO(gene = entrez, 
+                keytype = "ENTREZID", 
+                OrgDb = org.Dr.eg.db, 
+                ont = "BP", 
+                pAdjustMethod = "BH", 
+                qvalueCutoff = 0.05, 
+                readable = TRUE)
+# Dotplot visualization
+dotplot(ego, showCategory=50)
+# Multiple samples KEGG analysis
+compKEGG <- compareCluster(geneCluster = gene, 
+                           fun = "enrichKEGG",
+                           organism = "human",
+                           pvalueCutoff  = 0.05, 
+                           pAdjustMethod = "BH")
+dotplot(compKEGG, showCategory = 20, title = "KEGG Pathway Enrichment Analysis")
+
+
+5.寻找motif
+###bed文件由callpeaks得到，注意染色体标注一致（chr1与1的区别）！！！
+ls *new.bed|while read id
+do
+echo "
+#BSUB -e %J.err
+#BSUB -o %J.out
+#BSUB -q q2680v2
+#BSUB -n 8
+findMotifsGenome.pl ${id} danRer10 ${id%_summits_new.bed}_output -len 8,10,12
+annotatePeaks.pl ${id} danRer10 1>${id%_summits_new.bed}.peakAnn.xls 2>${id%_summits_new.bed}.annLog.txt" > ${id%_summits_new.bed}_homer.sh
+done
+
+6.deeptools绘图
+###建索引
+ls *sorted.bam|while read id ;do samtools index ${id}; done
+###bam文件转bigwig文件
+ls *sorted.bam| while read id 
+do 
+echo "
+#BSUB -e %J.err
+#BSUB -o %J.out
+#BSUB -q q2680v2
+#BSUB -n 4
+module load deepTools/3.5.0
+bamCoverage -p 4 --bam ${id} --binSize 10 --centerReads --smoothLength 14 --normalizeUsing RPKM -o ${id%_sorted.bam}.bigwig
+" > ${id%_sorted.bam}_bw.sh
+done
+
+#######bigwig文件画图
+
+#BSUB -e %J.err
+#BSUB -o %J.out
+#BSUB -q normal
+#BSUB -n 8
+module load deepTools/3.5.0
+
+#single
+computeMatrix reference-point -S WT-3.bigwig -R WT-3_summits.bed --referencePoint TSS -a 2000 -b 2000 -out WT-3_TSS.gz
+plotHeatmap -m WT-3_TSS.gz -out WT-3_TSS.png --heatmapHeight 15 --refPointLabel enh.center --regionsLabel enhancers --plotTitle 'WT-3_treat'
+
+#multiply
+computeMatrix reference-point \
+-S WT-1.bigwig  WT-2.bigwig WT-3.bigwig i3-1.bigwig i3-2.bigwig i3-3.bigwig \
+-R WT-1_summits.bed WT-2_summits.bed WT-3_summits.bed i3-1_summits.bed i3-2_summits.bed i3-3_summits.bed \
+--referencePoint TSS -a 3000 -b 3000 -out all_TSS.gz
+plotHeatmap -m all_TSS.gz -out all_TSS.png --heatmapHeight 10 --refPointLabel enh.center --regionsLabel enhancers --plotTitle 'all_TSS'
