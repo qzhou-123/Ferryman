@@ -1,0 +1,205 @@
+###原始数据质控(fastqc)
+ls *1.fq.gz | while read id 
+do 
+R1=${id}
+R2=${id%1.fq.gz}2.fq.gz
+echo "fastqc -o ./qc.result -t 8 ${R1} ${R2}" > ${id%1.fq.gz}qc.sh
+done
+获取脚本后循环提交任务
+
+###原始数据过滤获得高质量数据(trimgalore)
+module load TrimGalore/0.6.6
+ls ./*1.fq.gz | while read id
+do 
+R1=${id}
+R2=${id%1.fq.gz}2.fq.gz
+echo "trim_galore ${R1} ${R2} --three_prime_clip_R1 5 --three_prime_clip_R2 5 --clip_R1 8 --clip_R2 8 -q 20 --paired --phred33 -o trimmed_data" > ${id%1.fq.gz}trim.sh
+done
+获取脚本后循环提交任务
+
+###过滤数据质控(fastqc)
+module load FastQC/0.11.9
+ls *R1_val_1.fq.gz| while read id 
+do 
+R1=${id}
+R2=${id%R1_val_1.fq.gz}R2_val_2.fq.gz
+echo "fastqc -o ./qc.result -t 8 ${R1} ${R2}" > ${id%R1_val_1.fq.gz}qc.sh
+done
+获取脚本后循环提交任务
+
+####准备好目标物种参考基因组，构建甲基化比对基因组文件
+bismark_genome_preparation --bowtie2 ./ 
+
+###比对（bismark）
+ls *1.fq.gz|while read id 
+do 
+R1=$(echo ${id}|cut -d _ -f 1)
+echo "bismark --bowtie2 ./ -o bismark_mapping_results -1 ${id} -2 ${id%1.fq.gz}2.fq.gz" > ${R1}_bismark.sh
+done
+获取脚本后循环提交任务
+
+####将比对得到的bam文件进行排序、去重
+sambamba sort -m 8GB --tmpdir tmp -t 5 -o output_sorted.bam input_file.bam
+sambamba markdup --overflow-list-size 1000000 --tmpdir tmp -t 5 input_sorted.bam output.bam 
+
+
+###提取甲基化信息（创建的bismark基因组文件和去重后的BAM文件）
+ls *.bam|while read id 
+do 
+echo "bismark_methylation_extractor -p -comprehensive --no_overlap --bedGraph --counts --cytosine_report --genome_folder ../ ${id} -o ." > ${id%bam}_ex.sh
+done
+获取脚本后循环提交任务
+
+###讲生成的比对报告进行整合
+ls *PE_report.txt|while read id
+do
+echo "bismark2report --dir bismark2report.result --alignment_report ${id}" > ${id%_1_bismark_bt2_PE_report.txt}.report.sh
+done
+获取脚本后循环提交任务
+
+###测试内嵌噬菌体的转化率
+to-mr -o XX-1A.mr -m bismark XX-1A.dedu.sorted.bam
+bsrate -c ../xx2.fa -o XX-1A.bsrate XX-1A.mr
+
+
+####将去重复排序的bam文件转化成bw文件，可在IGV进行可视化
+ls *dedu.sorted.bam|while read id
+do 
+echo "bamCoverage -b ${id} -o ${id%.dedu.sorted.bam}.sorted.bw" > ${id%.dedu.sorted.bam}.sorted.bw.sh
+done
+
+###统计reads在全基因组范围内的情况
+multiBamSummary bins --bamfiles XX-1A.dedu.sorted.bam  XX-2A.dedu.sorted.bam  XX-3A.dedu.sorted.bam  YY-1A.dedu.sorted.bam  YY-2A.dedu.sorted.bam  YY-3A.dedu.sorted.bam -out results.npz
+
+
+
+####统计全基因组范围的peak在基因特征的分布情况
+computeMatrix reference-point --referencePoint TSS -b 3000 -a 5000 -R GFF3.bed-S XX-1A.dedu.sorted.bw --skipZeros -o exp_rep1_1.TSS.matrix.gz
+plotProfile -m TSS.matrix.gz -o ExampleProfile.png --numPlotsPerRow 2 --plotTitle "ExampleProfile"
+plotHeatmap -m TSS.matrix.gz -o ExampleHeatmap.png 
+
+
+###根据测序深度获取甲基化图谱
+LC_ALL=C sort -k 1,1 -k 2,2n -k 3,3n -k 6,6 XX-1A.mr -o XX-1A.mr.sorted_stat
+
+methcounts -c ../xx2.fa -o XX-1A.meth  XX-1A.mr.sorted_stat
+levels -o XX-1A.levels XX-1A.meth
+
+ls *.meth|while read id; do grep "CpG" ${id}|grep -v "HiC_scaffol" > ${id%.meth}.CpG.meth;done
+
+ls *meth | while read id ; do grep "CpG" ${id} | awk '{print $1,$2,$3,$4,$6,sprintf("%.0f", $6*$5)}'  OFS='\t'  > ${id%meth}meth.CpG.bsseq;done
+
+
+###差异甲基化鉴定
+
+setwd("/public/home/qzhou/wgbs_yellow_catfish_test/catfish/test/bismark_mapping_results")
+library(methylKit)
+library(ggplot2)
+library(graphics)
+library(dplyr)
+
+#########################################DMC########################################################
+cov.list = list("XX-1A_1.cov.gz","XX-2A_1.cov.gz","XX-3A_1.cov.gz","YY-1A_1.cov.gz","YY-2A_1.cov.gz","YY-3A_1.cov.gz")
+
+obj = methRead(cov.list,
+        sample.id = list("XX-1A","XX-2A","XX-3A","YY-1A","YY-2A","YY-3A"),
+        assembly = "catfish",
+        treatment = c(1,1,1,0,0,0),
+        pipeline = "bismarkCoverage",
+       context = "CpG")
+pdf("./getMethylationStats_XX1.pdf")
+getMethylationStats(
+        obj[[4]],
+        plot = TRUE,
+        both.strands = FALSE,
+        labels = TRUE,
+        chunk.size = 1e+06)
+dev.off()
+
+pdf("./getCoverageStats_XX1.pdf")
+getCoverageStats(
+      obj[[4]],
+      plot = TRUE,
+      both.strands = FALSE,
+      labels = TRUE,
+      chunk.size = 1e+06)
+dev.off()
+
+
+resolution=base(default)/region
+
+meth = unite(obj, destrand=FALSE) 
+
+head(meth)
+查看样本相关性
+pdf("./cor.pdf")
+getCorrelation(meth,plot=TRUE)
+dev.off()
+
+样本间聚类
+pdf("./clu.pdf")
+clusterSamples(meth, dist="correlation", method="ward", plot=TRUE)
+dev.off()
+
+#PCA
+pdf("./pca.pdf")
+PCASamples(meth)
+dev.off()
+
+#PCA碎石图
+pdf("./pca_sample.pdf")
+PCASamples(meth,screeplot= TRUE)
+dev.off()
+
+pdf("./pca_dot.pdf")
+PCASamples(meth)
+dev.off()
+
+myDiff = calculateDiffMeth(meth)
+
+myDiff20q0.05.hyper = getMethylDiff(myDiff,difference=20,qvalue=0.05,type="hyper")
+all = getMethylDiff(myDiff,difference=20,qvalue=0.05,type="all")
+myDiff20q0.05.hypo = getMethylDiff(myDiff,difference=20,qvalue=0.05,type="hypo")
+head(all)
+
+write.csv(myDiff20q0.05.hyper,"./myDiff20q0.05.hyper.csv",row.names = F)
+write.csv(all,"./myDiff20q0.05.hyper.csv",row.names = F)
+write.csv(myDiff20q0.05.hypo,"./myDiff20q0.05.hypo.csv",row.names = F)
+
+#########################################DMR###################################################################
+cov.list = list("XX-1A_1.cov.gz","XX-2A_1.cov.gz","XX-3A_1.cov.gz","YY-1A_1.cov.gz","YY-2A_1.cov.gz","YY-3A_1.cov.gz")
+obj = methRead(cov.list,
+        sample.id = list("XX-1A","XX-2A","XX-3A","YY-1A","YY-2A","YY-3A"),
+        assembly = "catfish",
+        treatment = c(1,1,1,0,0,0),
+        pipeline = "bismarkCoverage",
+        resolution = "region" ,
+        context = "CpG")
+resolution=base(default)/region
+meth = unite(obj, destrand=FALSE)
+head(meth)
+myDiff = calculateDiffMeth(meth)
+head(myDiff)   
+###diffregions
+#柱状图
+pdf("./bar3.pdf")
+diffMethPerChr(
+      myDiff,
+      plot = TRUE,
+      qvalue.cutoff = 0.01,
+      meth.cutoff = 25)
+dev.off()
+
+
+myDiff25q0.01.hyper = getMethylDiff(myDiff,difference=25,qvalue=0.01,type="hyper")
+
+myDiff25q0.01 = getMethylDiff(myDiff,difference=25,qvalue=0.01,type="all")
+
+myDiff25q0.01.hypo = getMethylDiff(myDiff,difference=25,qvalue=0.01,type="hypo")
+
+
+write.csv(myDiff25q0.01.hyper,"./myDiff25q0.01.hyper.csv",row.names = F)
+write.csv(myDiff25q0.01,"./myDiff25q0.01.hyper.csv",row.names = F)
+write.csv(myDiff20q0.05.hypo,"./myDiff25q0.01.hypo.csv",row.names = F)
+
+
