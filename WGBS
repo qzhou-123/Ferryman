@@ -50,7 +50,7 @@ echo "bismark_methylation_extractor -p -comprehensive --no_overlap --bedGraph --
 done
 获取脚本后循环提交任务
 
-###讲生成的比对报告进行整合
+###将生成的比对报告进行整合
 ls *PE_report.txt|while read id
 do
 echo "bismark2report --dir bismark2report.result --alignment_report ${id}" > ${id%_1_bismark_bt2_PE_report.txt}.report.sh
