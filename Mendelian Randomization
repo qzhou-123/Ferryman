@@ -1,0 +1,51 @@
+setwd(dir = "/Users/zhouquan/Desktop/孟德尔随机化")
+devtools::install_github("MRCIEU/TwoSampleMR")
+library(gwasglue)
+library(TwoSampleMR)
+library(ieugwasr)
+library(dplyr)
+Sys.setenv(OPENGWAS_JWT="eyJhbGciOiJSUzI1NiIsImtpZCI6ImFwaS1qd3QiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJhcGkub3Blbmd3YXMuaW8iLCJhdWQiOiJhcGkub3Blbmd3YXMuaW8iLCJzdWIiOiI3Mjc0NjcyOThAcXEuY29tIiwiaWF0IjoxNzIyNzQ0OTQ5LCJleHAiOjE3MjM5NTQ1NDl9.cNO_Cxiv_W3ifoUEBaXT9jtVRQr54xhrS4PTqaGwizVG0QBdy5Lm_lqchVbfIMmJOU4JUbjG1XaC-dHP7w-L185RtNPNTwGgEOHcy61CUyEokmYBQRp38X0vzs9MLf2XkWbEWDdhAfWT32VNnNBMNtT_kdSRnmW2vGnFBNzqTcf-dpzDnlvfyQ6ffVSdwVh7DQ7ihLU5I2qRYdqVbcam-apeMd0kga4Jyh1Yl4oFOnWIYXSjfN-3YkWRjAdKOFD6JHBa-w0k0ZRUQzT9ZSqvvRRoZOQphmAxBPzjX5FwU8-uD1k4pTxxG_uUuBbhKih5813_VUydspNUF_FEd-iLgg")
+ieugwasr::user()
+exposure_data <- extract_instruments("ukb-b-19953")
+
+head(exposure_data)[1:4, ]
+colnames(exposure_data)
+
+outcome_data <- extract_outcome_data(
+  snps = exposure_data$SNP,       # 指定要提取结局数据的 SNP 列表
+  outcomes = 'ebi-a-GCST90007526',       # 指定 GWAS 数据集
+  proxies = FALSE,                # 不使用代理 SNP
+  maf_threshold = 0.01,           # 最小等位基因频率阈
+)
+View(outcome_data)
+# 协调或整合暴露数据和结局数据，以确保它们具有相同的格式和结构
+data <- harmonise_data(
+  exposure_dat = exposure_data,  # 指定暴露数据，这是之前从 GWAS 数据集中提取的工具变量数据
+  outcome_dat = outcome_data)     # 指定结局数据，这是从另一个 GWAS 数据集中提取的关联结局数据
+
+
+# 进行孟德尔随机化分析
+result <- mr(data)
+print(result)
+#View(result)
+
+mr_heterogeneity(data)
+mr_pleiotropy_test(data)
+
+p1 <- mr_scatter_plot(result, data)
+p1
+
+result_single <- mr_singlesnp(data)
+p2 <- mr_forest_plot(result_single)
+p2
+
+result_loo <- mr_leaveoneout(data)
+p3 <- mr_leaveoneout_plot(result_loo)
+p3
+
+result_single <- mr_singlesnp(data)
+p4 <- mr_funnel_plot(result_single)
+p4
+
+
+
