@@ -113,7 +113,7 @@ dotplot(ego, showCategory=50)
 # Multiple samples KEGG analysis
 compKEGG <- compareCluster(geneCluster = gene, 
                            fun = "enrichKEGG",
-                           organism = "human",
+                           organism = "dre",
                            pvalueCutoff  = 0.05, 
                            pAdjustMethod = "BH")
 dotplot(compKEGG, showCategory = 20, title = "KEGG Pathway Enrichment Analysis")
