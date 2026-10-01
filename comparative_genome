@@ -78,5 +78,4 @@ python3 callCodeml.py ./PAML  paml.tree
 <<<<<<< HEAD
 注：callCodeml.py为网上查找脚本，需自己按照需求进行修改生成统一化的表格，网址为https://www.jianshu.com/p/361275ed33da
 =======
-注：callCodeml.py为网上查找脚本，需自己按照需求进行修改生成统一化的表格,网址为https://www.jianshu.com/p/361275ed33da
->>>>>>> 0177fc0da4a842c0ae788a061f9b901eaa81ab8b
+
