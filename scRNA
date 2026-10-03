@@ -1,0 +1,385 @@
+rm(list = ls())
+getwd()
+setwd("~/Desktop/pbmc3k/")
+library(Seurat)
+library(ggplot2)
+library(tidyverse)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(CellChat)
+library(patchwork)
+library(Seurat)
+library(monocle3)
+library(SeuratWrappers)
+
+# 读入
+pbmc.data <- Read10X(data.dir = "~/Desktop/pbmc3k/raw data/hg19/")
+pbmc <- CreateSeuratObject(counts = pbmc.data, project = "pbmc3k", min.cells = 3, min.features = 200)
+pbmc
+
+# 质控
+grep("^MT-", rownames(pbmc), value = TRUE)
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# 过滤
+pbmc <- subset(pbmc, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+pbmc
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# 归一化
+pbmc <- NormalizeData(pbmc)
+
+# 高变基因
+pbmc <- FindVariableFeatures(pbmc, selection.method = "vst", nfeatures = 2000)
+top10 <- head(VariableFeatures(pbmc), 10)
+top10
+plot1 <- VariableFeaturePlot(pbmc)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE, xnudge = 0, ynudge = 0)
+plot1 + plot2
+
+# 标准化 + PCA
+pbmc <- ScaleData(pbmc, features = VariableFeatures(pbmc))
+pbmc <- RunPCA(pbmc, features = VariableFeatures(object = pbmc))
+print(pbmc[["pca"]], dims = 1:5, nfeatures = 5)
+ElbowPlot(pbmc)
+
+# 聚类 + UMAP
+pbmc <- FindNeighbors(pbmc, dims = 1:10)
+pbmc <- FindClusters(pbmc, resolution = 0.5)
+pbmc <- RunUMAP(pbmc, dims = 1:10)
+DimPlot(pbmc, reduction = "umap")
+
+# 找 marker
+pbmc.markers <- FindAllMarkers(pbmc, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+top10 <- pbmc.markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 10, order_by = avg_log2FC)
+
+top10
+
+# 热图（新建对象，不覆盖 pbmc）
+pbmc_marker <- ScaleData(pbmc, features = top10$gene)
+
+png("marker_heatmap.png", width = 14, height = 14, units = "in", res = 300)
+DoHeatmap(pbmc_marker, features = top10$gene) + NoLegend()
+dev.off()
+##给 cluster 命名
+new.cluster.ids <- c(
+  "Naive CD4 T", "CD14+ Mono", "Memory CD4 T", "B", "CD8 T",
+  "NK", "FCGR3A+ Mono", "Platelet", "DC"
+)
+names(new.cluster.ids) <- levels(pbmc)
+pbmc <- RenameIdents(pbmc, new.cluster.ids)
+
+DimPlot(pbmc, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+##验证关键marker
+FeaturePlot(pbmc, features = c("CD3D", "MS4A1", "LYZ", "GNLY", "PPBP"), ncol = 3)
+
+##保存Seurat 对象
+saveRDS(pbmc, file = "~/Desktop/pbmc3k/pbmc3k_annotated.rds")
+
+##比较 Naive CD4 T 和 Memory CD4 T,寻找两组细胞类型之间的差异基因
+markers_cd4 <- FindMarkers(
+  pbmc,
+  ident.1 = "Naive CD4 T",
+  ident.2 = "Memory CD4 T",
+  only.pos = FALSE,
+  min.pct = 0.25,
+  logfc.threshold = 0.25
+)
+
+head(markers_cd4)
+
+markers_cd4$gene <- rownames(markers_cd4)
+
+ggplot(markers_cd4, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Naive CD4 T vs Memory CD4 T", x = "log2FC", y = "-log10(adj p)")
+
+
+# Naive CD4 T 高表达的 top 10
+top_up <- markers_cd4 %>% arrange(desc(avg_log2FC)) %>% head(10)
+top_up
+
+# Memory CD4 T 高表达的 top 10
+top_down <- markers_cd4 %>% arrange(avg_log2FC) %>% head(10)
+top_down
+
+# 取 top 20 差异基因
+top20 <- markers_cd4 %>% arrange(desc(abs(avg_log2FC))) %>% head(20)
+
+# 关键改动：新建对象做 ScaleData，不要动 pbmc
+
+pbmc_cd4_sub <- subset(pbmc, idents = c("Naive CD4 T", "Memory CD4 T"))
+
+# 对差异基因做标准化
+pbmc_cd4_sub <- ScaleData(pbmc_cd4_sub, features = top20$gene)
+
+# 画热图，只显示这两组
+png("Naive_Memory_CD4.png", width = 20, height = 8, units = "in", res = 300)
+DoHeatmap(pbmc_cd4_sub, features = top20$gene) + NoLegend()
+dev.off()
+write.csv(markers_cd4, "markers_naive_vs_memory_cd4.csv")
+
+##取全部显著差异基因
+
+## Naive CD4 T 高表达（正 log2FC）
+gene_up <- markers_cd4 %>%
+  filter(p_val_adj < 0.05, avg_log2FC > 0.25) %>%
+  rownames()
+
+## Memory CD4 T 高表达（负 log2FC）
+gene_down <- markers_cd4 %>%
+  filter(p_val_adj < 0.05, avg_log2FC < -0.25) %>%
+  rownames()
+
+length(gene_up)
+length(gene_down)
+
+entrez_up <- bitr(gene_up, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+entrez_down <- bitr(gene_down, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+head(entrez_up)
+#up
+ego_up <- enrichGO(
+  gene = entrez_up$ENTREZID,
+  OrgDb = org.Hs.eg.db,
+  ont = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05,
+  qvalueCutoff = 0.05,
+  readable = TRUE
+)
+
+head(ego_up)
+barplot(ego_up, showCategory = 15)
+dotplot(ego_up, showCategory = 15)
+#down
+ego_down <- enrichGO(
+  gene = entrez_down$ENTREZID,
+  OrgDb = org.Hs.eg.db,
+  ont = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05,
+  qvalueCutoff = 0.05,
+  readable = TRUE
+)
+
+head(ego_down)
+
+barplot(ego_down, showCategory = 15)
+dotplot(ego_down, showCategory = 15)
+
+##KEGG
+#up
+gene_up <- markers_cd4 %>%
+  filter(avg_log2FC > 0) %>%
+  rownames()
+
+length(gene_up)
+entrez_up <- bitr(gene_up, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+kegg_up <- enrichKEGG(
+  gene = entrez_up$ENTREZID,
+  organism = "hsa",
+  pvalueCutoff = 0.05
+)
+
+head(kegg_up)
+nrow(as.data.frame(kegg_up))
+
+barplot(kegg_up, showCategory = 15)
+dotplot(kegg_up, showCategory = 15)
+#down
+gene_down <- markers_cd4 %>%
+  filter(p_val_adj < 0.1, avg_log2FC < -0.1) %>%
+  rownames()
+
+length(gene_down)
+
+entrez_down <- bitr(gene_down, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+kegg_down <- enrichKEGG(
+  gene = entrez_down$ENTREZID,
+  organism = "hsa",
+  pvalueCutoff = 0.05
+)
+
+head(kegg_down)
+nrow(as.data.frame(kegg_down))
+
+barplot(kegg_down, showCategory = 15)
+dotplot(kegg_down, showCategory = 15)
+
+# 3. 保存结果 
+
+write.csv(as.data.frame(kegg_up), "KEGG_Naive_CD4.csv")
+write.csv(as.data.frame(kegg_down), "KEGG_Memory_CD4.csv")
+saveRDS(pbmc, "pbmc3k_annotated.rds")
+
+###细胞通讯CellChat###
+# 1. 确认细胞类型
+levels(pbmc)
+
+# 2. 准备 CellChat 输入 
+data.input <- GetAssayData(pbmc, assay = "RNA", layer = "data")
+meta <- data.frame(labels = Idents(pbmc), row.names = names(Idents(pbmc)))
+
+dim(data.input)
+head(meta)
+
+# 3. 创建 CellChat 对象 
+cellchat <- createCellChat(object = data.input, meta = meta, group.by = "labels")
+cellchat
+
+# 4. 设置配体-受体数据库 
+CellChatDB <- CellChatDB.human
+showDatabaseCategory(CellChatDB)
+cellchat@DB <- CellChatDB
+
+# 5. 预处理 
+cellchat <- subsetData(cellchat)
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+
+
+# 6. 计算通讯概率（关键：明确参数）
+cellchat <- computeCommunProb(cellchat, type = "triMean", nboot = 100)
+
+# 7. 计算通路水平通讯概率（关键，生成 netP）
+cellchat <- computeCommunProbPathway(cellchat)
+
+# 8. 过滤细胞数太少的通讯 
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+
+# 9. 聚合通讯网络 
+cellchat <- aggregateNet(cellchat)
+
+# 10. 检查 netP 是否生成 
+names(cellchat@netP)
+dim(cellchat@netP$prob)
+
+# 11. 计算网络中心性 
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP")
+
+# 12. 提取通讯结果 
+df.net <- subsetCommunication(cellchat)
+head(df.net)
+
+# 13. 可视化
+
+# 13.1 通讯总览
+
+# 统计每种细胞类型的细胞数，用于圆圈图节点大小
+groupSize <- as.numeric(table(cellchat@idents))
+
+# 设置画布为 1 行 2 列，xpd = TRUE 允许图形超出边界
+par(mfrow = c(1,2), xpd = TRUE)
+
+# 圆圈图：通讯数量（哪种细胞对之间通讯最多）
+netVisual_circle(cellchat@net$count, vertex.weight = groupSize, weight.scale = TRUE, label.edge = FALSE, title.name = "Number of interactions")
+
+# 圆圈图：通讯强度（哪种细胞对之间通讯最强）
+netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, weight.scale = TRUE, label.edge = FALSE, title.name = "Interaction weights/strength")
+
+# 热图：通讯数量矩阵
+netVisual_heatmap(cellchat, measure = "count", color.heatmap = "Reds")
+
+# 热图：通讯强度矩阵
+netVisual_heatmap(cellchat, measure = "weight", color.heatmap = "Reds")
+
+
+# 13.2 通路总览
+
+# 列出所有检测到的信号通路（只输出名字，不画图）
+cellchat@netP$pathways
+
+# 通路总览热图：发送 + 接收（所有通路 × 所有细胞类型）
+netAnalysis_signalingRole_heatmap(cellchat, pattern = "all", width = 15, height = 10)
+
+# 通路总览热图：只看发送信号
+netAnalysis_signalingRole_heatmap(cellchat, pattern = "outgoing", width = 15, height = 10)
+
+# 通路总览热图：只看接收信号
+netAnalysis_signalingRole_heatmap(cellchat, pattern = "incoming", width = 15, height = 10)
+
+# 散点图：细胞在发送/接收信号中的角色
+netAnalysis_signalingRole_scatter(cellchat)
+
+
+# 13.3 单通路（以 MIF 为例）
+
+# MIF 通路：圆圈图（看通讯方向）
+netVisual_individual(cellchat, signaling = "MIF", layout = "circle")
+
+# MIF 通路：气泡图（看配体-受体细节）
+netVisual_bubble(cellchat, signaling = "MIF", remove.isolate = FALSE)
+
+# MIF 通路：和弦图（另一种布局，看整体流向）
+netVisual_individual(cellchat, signaling = "MIF", layout = "chord")
+
+# MIF 通路：配体-受体贡献图（哪对配体-受体贡献最大）
+netAnalysis_contribution(cellchat, signaling = "MIF")
+
+
+# 13.4 特定细胞对（以 NK → CD8 T 为例）----------
+
+# NK → CD8 T 的配体-受体气泡图
+netVisual_bubble(cellchat, sources.use = "NK", targets.use = "CD8 T", remove.isolate = FALSE)
+
+#######拟时序分析########
+
+
+# 1. 取 T 细胞亚群 
+t_cells <- subset(pbmc, idents = c("Naive CD4 T", "Memory CD4 T", "CD8 T"))
+t_cells
+
+# 2. 转成 Monocle3 对象 
+cds <- as.cell_data_set(t_cells)
+cds
+
+# 3. 聚类分区 
+cds <- cluster_cells(cds)
+
+# 4. 学习轨迹图 
+cds <- learn_graph(cds)
+
+# 5. 看轨迹图（按细胞类型着色）
+plot_cells(cds, color_cells_by = "ident", label_groups_by_cluster = FALSE)
+
+# 6. 指定起点：用 Naive CD4 T 的第一个细胞 
+naive_cells <- colnames(cds)[colData(cds)$ident == "Naive CD4 T"]
+cds <- order_cells(cds, root_cells = naive_cells[1])
+
+# 7. 画拟时序图 
+plot_cells(
+  cds,
+  color_cells_by = "pseudotime",
+  label_cell_groups = FALSE,
+  label_leaves = FALSE,
+  label_branch_points = FALSE
+)
+
+# 找随拟时序变化的基因
+cds_genes <- graph_test(cds, neighbor_graph = "principal_graph", cores = 4)
+
+# 按 q_value 排序
+cds_genes_sig <- cds_genes[order(cds_genes$q_value), ]
+head(cds_genes_sig)
+
+# 过滤显著基因
+sig_genes <- cds_genes[cds_genes$q_value < 0.05, ]
+nrow(sig_genes)
+
+# 按 q_value 排序后取 top 6
+sig_genes <- sig_genes[order(sig_genes$q_value), ]
+top_genes <- rownames(sig_genes)[1:6]
+top_genes
+rowData(cds)$gene_short_name <- rownames(cds)
+
+# 画图
+pdf("pseudotime_genes_sig.pdf", width = 10, height = 8)
+plot_genes_in_pseudotime(cds[top_genes, ], color_cells_by = "ident")
+dev.off()
