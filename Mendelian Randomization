@@ -1,51 +1,80 @@
+# 设置工作目录
 setwd(dir = "/Users/zhouquan/Desktop/孟德尔随机化")
+
+# 从 GitHub 安装 TwoSampleMR 包
 devtools::install_github("MRCIEU/TwoSampleMR")
-library(gwasglue)
-library(TwoSampleMR)
-library(ieugwasr)
-library(dplyr)
+
+# 加载所需的包
+library(gwasglue)       # GWAS 数据格式转换
+library(TwoSampleMR)    # 孟德尔随机化主包
+library(ieugwasr)       # 连接 OpenGWAS 数据库
+library(dplyr)          # 数据处理
+
+# 设置 OpenGWAS 的 API token（用于访问数据库）
 Sys.setenv(OPENGWAS_JWT="eyJhbGciOiJSUzI1NiIsImtpZCI6ImFwaS1qd3QiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJhcGkub3Blbmd3YXMuaW8iLCJhdWQiOiJhcGkub3Blbmd3YXMuaW8iLCJzdWIiOiI3Mjc0NjcyOThAcXEuY29tIiwiaWF0IjoxNzIyNzQ0OTQ5LCJleHAiOjE3MjM5NTQ1NDl9.cNO_Cxiv_W3ifoUEBaXT9jtVRQr54xhrS4PTqaGwizVG0QBdy5Lm_lqchVbfIMmJOU4JUbjG1XaC-dHP7w-L185RtNPNTwGgEOHcy61CUyEokmYBQRp38X0vzs9MLf2XkWbEWDdhAfWT32VNnNBMNtT_kdSRnmW2vGnFBNzqTcf-dpzDnlvfyQ6ffVSdwVh7DQ7ihLU5I2qRYdqVbcam-apeMd0kga4Jyh1Yl4oFOnWIYXSjfN-3YkWRjAdKOFD6JHBa-w0k0ZRUQzT9ZSqvvRRoZOQphmAxBPzjX5FwU8-uD1k4pTxxG_uUuBbhKih5813_VUydspNUF_FEd-iLgg")
+
+# 查看当前 OpenGWAS 用户信息
 ieugwasr::user()
+
+# 提取暴露数据的工具变量（SNP）
 exposure_data <- extract_instruments("ukb-b-19953")
 
+# 查看暴露数据的前 4 行
 head(exposure_data)[1:4, ]
+
+# 查看暴露数据的列名
 colnames(exposure_data)
 
+# 提取结局数据（用暴露的 SNP 去匹配结局）
 outcome_data <- extract_outcome_data(
   snps = exposure_data$SNP,       # 指定要提取结局数据的 SNP 列表
-  outcomes = 'ebi-a-GCST90007526',       # 指定 GWAS 数据集
+  outcomes = 'ebi-a-GCST90007526', # 指定 GWAS 数据集
   proxies = FALSE,                # 不使用代理 SNP
-  maf_threshold = 0.01,           # 最小等位基因频率阈
+  maf_threshold = 0.01,           # 最小等位基因频率阈值
 )
-View(outcome_data)
-# 协调或整合暴露数据和结局数据，以确保它们具有相同的格式和结构
-data <- harmonise_data(
-  exposure_dat = exposure_data,  # 指定暴露数据，这是之前从 GWAS 数据集中提取的工具变量数据
-  outcome_dat = outcome_data)     # 指定结局数据，这是从另一个 GWAS 数据集中提取的关联结局数据
 
+# 查看结局数据
+View(outcome_data)
+
+# 协调暴露和结局数据，确保格式一致、效应方向对齐
+data <- harmonise_data(
+  exposure_dat = exposure_data,   # 暴露数据
+  outcome_dat = outcome_data      # 结局数据
+)
 
 # 进行孟德尔随机化分析
 result <- mr(data)
-print(result)
-#View(result)
 
+# 打印 MR 结果
+print(result)
+
+# 检验异质性（不同 SNP 的效应是否一致）
 mr_heterogeneity(data)
+
+# 检验多效性（SNP 是否通过其他途径影响结局）
 mr_pleiotropy_test(data)
 
+# 画散点图（暴露 vs 结局的效应）
 p1 <- mr_scatter_plot(result, data)
 p1
 
+# 单 SNP 分析
 result_single <- mr_singlesnp(data)
+
+# 画森林图（每个 SNP 的效应）
 p2 <- mr_forest_plot(result_single)
 p2
 
+# 留一法分析（逐个剔除 SNP，看结果是否稳健）
 result_loo <- mr_leaveoneout(data)
+
+# 画留一法图
 p3 <- mr_leaveoneout_plot(result_loo)
 p3
 
+# 再次单 SNP 分析（用于漏斗图）
 result_single <- mr_singlesnp(data)
+
+# 画漏斗图（看是否存在偏倚）
 p4 <- mr_funnel_plot(result_single)
 p4
-
-
-
