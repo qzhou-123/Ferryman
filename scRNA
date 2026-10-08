@@ -112,8 +112,7 @@ top_down
 # 取 top 20 差异基因
 top20 <- markers_cd4 %>% arrange(desc(abs(avg_log2FC))) %>% head(20)
 
-# 关键改动：新建对象做 ScaleData，不要动 pbmc
-
+# 只保留 Naive 和 Memory 两组细胞
 pbmc_cd4_sub <- subset(pbmc, idents = c("Naive CD4 T", "Memory CD4 T"))
 
 # 对差异基因做标准化
