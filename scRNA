@@ -43,6 +43,7 @@ pbmc <- ScaleData(pbmc, features = VariableFeatures(pbmc))
 pbmc <- RunPCA(pbmc, features = VariableFeatures(object = pbmc))
 print(pbmc[["pca"]], dims = 1:5, nfeatures = 5)
 ElbowPlot(pbmc)
+DimPlot(pbmc, reduction = "pca")
 
 # 聚类 + UMAP
 pbmc <- FindNeighbors(pbmc, dims = 1:10)
